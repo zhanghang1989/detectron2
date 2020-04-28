@@ -286,6 +286,7 @@ class DeformBottleneckBlock(ResNetBlockBase):
         deform_modulated=False,
         deform_num_groups=1,
         avd=False,
+        avg_down=False,
     ):
         """
         Similar to :class:`BottleneckBlock`, but with deformable conv in the 3x3 convolution.
@@ -293,16 +294,29 @@ class DeformBottleneckBlock(ResNetBlockBase):
         super().__init__(in_channels, out_channels, stride)
         self.deform_modulated = deform_modulated
         self.avd = avd and (stride>1)
+        self.avg_down = avg_down
 
         if in_channels != out_channels:
-            self.shortcut = Conv2d(
-                in_channels,
-                out_channels,
-                kernel_size=1,
-                stride=stride,
-                bias=False,
-                norm=get_norm(norm, out_channels),
-            )
+            if self.avg_down:
+                self.shortcut_avgpool = nn.AvgPool2d(kernel_size=stride, stride=stride, 
+                                                     ceil_mode=True, count_include_pad=False)
+                self.shortcut = Conv2d(
+                    in_channels,
+                    out_channels,
+                    kernel_size=1,
+                    stride=1,
+                    bias=False,
+                    norm=get_norm(norm, out_channels),
+                )
+            else:
+                self.shortcut = Conv2d(
+                    in_channels,
+                    out_channels,
+                    kernel_size=1,
+                    stride=stride,
+                    bias=False,
+                    norm=get_norm(norm, out_channels),
+                )
         else:
             self.shortcut = None
 
@@ -385,6 +399,8 @@ class DeformBottleneckBlock(ResNetBlockBase):
         out = self.conv3(out)
 
         if self.shortcut is not None:
+            if self.avg_down:
+                x = self.shortcut_avgpool(x) 
             shortcut = self.shortcut(x)
         else:
             shortcut = x
