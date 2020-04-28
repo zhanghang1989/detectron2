@@ -285,12 +285,14 @@ class DeformBottleneckBlock(ResNetBlockBase):
         dilation=1,
         deform_modulated=False,
         deform_num_groups=1,
+        avd=False,
     ):
         """
         Similar to :class:`BottleneckBlock`, but with deformable conv in the 3x3 convolution.
         """
         super().__init__(in_channels, out_channels, stride)
         self.deform_modulated = deform_modulated
+        self.avd = avd and (stride>1)
 
         if in_channels != out_channels:
             self.shortcut = Conv2d(
@@ -335,7 +337,7 @@ class DeformBottleneckBlock(ResNetBlockBase):
             bottleneck_channels,
             bottleneck_channels,
             kernel_size=3,
-            stride=stride_3x3,
+            stride=1 if self.avd else stride_3x3,
             padding=1 * dilation,
             bias=False,
             groups=num_groups,
@@ -343,6 +345,9 @@ class DeformBottleneckBlock(ResNetBlockBase):
             deformable_groups=deform_num_groups,
             norm=get_norm(norm, bottleneck_channels),
         )
+
+        if self.avd:
+            self.avd_layer = nn.AvgPool2d(3, stride, padding=1)
 
         self.conv3 = Conv2d(
             bottleneck_channels,
@@ -373,6 +378,9 @@ class DeformBottleneckBlock(ResNetBlockBase):
             offset = self.conv2_offset(out)
             out = self.conv2(out, offset)
         out = F.relu_(out)
+
+        if self.avd:
+            out = self.avd_layer(out)
 
         out = self.conv3(out)
 
