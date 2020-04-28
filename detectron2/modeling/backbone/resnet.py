@@ -287,6 +287,8 @@ class DeformBottleneckBlock(ResNetBlockBase):
         deform_num_groups=1,
         avd=False,
         avg_down=False,
+        radix=2,
+        bottleneck_width=64,
     ):
         """
         Similar to :class:`BottleneckBlock`, but with deformable conv in the 3x3 convolution.
@@ -295,6 +297,10 @@ class DeformBottleneckBlock(ResNetBlockBase):
         self.deform_modulated = deform_modulated
         self.avd = avd and (stride>1)
         self.avg_down = avg_down
+        self.radix = radix
+
+        cardinality = num_groups
+        group_width = int(bottleneck_channels * (bottleneck_width / 64.)) * cardinality 
 
         if in_channels != out_channels:
             if self.avg_down:
@@ -324,11 +330,11 @@ class DeformBottleneckBlock(ResNetBlockBase):
 
         self.conv1 = Conv2d(
             in_channels,
-            bottleneck_channels,
+            group_width,
             kernel_size=1,
             stride=stride_1x1,
             bias=False,
-            norm=get_norm(norm, bottleneck_channels),
+            norm=get_norm(norm, group_width),
         )
 
         if deform_modulated:
@@ -343,37 +349,57 @@ class DeformBottleneckBlock(ResNetBlockBase):
             bottleneck_channels,
             offset_channels * deform_num_groups,
             kernel_size=3,
-            stride=stride_3x3,
-            padding=1 * dilation,
-            dilation=dilation,
-        )
-        self.conv2 = deform_conv_op(
-            bottleneck_channels,
-            bottleneck_channels,
-            kernel_size=3,
             stride=1 if self.avd else stride_3x3,
             padding=1 * dilation,
-            bias=False,
-            groups=num_groups,
             dilation=dilation,
-            deformable_groups=deform_num_groups,
-            norm=get_norm(norm, bottleneck_channels),
         )
+        if self.radix>1:
+            from .splat import SplAtConv2d_dcn
+            self.conv2 = SplAtConv2d_dcn(
+                            group_width, group_width, kernel_size=3, 
+                            stride = 1 if self.avd else stride_3x3,
+                            padding=dilation, dilation=dilation, 
+                            groups=cardinality, bias=False,
+                            radix=self.radix, 
+                            norm=norm,
+                            deform_conv_op=deform_conv_op,
+                            deformable_groups=deform_num_groups,
+                            deform_modulated=deform_modulated,
+
+                         )
+        else:
+            self.conv2 = deform_conv_op(
+                bottleneck_channels,
+                bottleneck_channels,
+                kernel_size=3,
+                stride=1 if self.avd else stride_3x3,
+                padding=1 * dilation,
+                bias=False,
+                groups=num_groups,
+                dilation=dilation,
+                deformable_groups=deform_num_groups,
+                norm=get_norm(norm, bottleneck_channels),
+            )
 
         if self.avd:
             self.avd_layer = nn.AvgPool2d(3, stride, padding=1)
 
         self.conv3 = Conv2d(
-            bottleneck_channels,
+            group_width,
             out_channels,
             kernel_size=1,
             bias=False,
             norm=get_norm(norm, out_channels),
         )
 
-        for layer in [self.conv1, self.conv2, self.conv3, self.shortcut]:
-            if layer is not None:  # shortcut can be None
-                weight_init.c2_msra_fill(layer)
+        if self.radix>1:
+            for layer in [self.conv1, self.conv3, self.shortcut]:
+                if layer is not None:  # shortcut can be None
+                    weight_init.c2_msra_fill(layer)
+        else:
+            for layer in [self.conv1, self.conv2, self.conv3, self.shortcut]:
+                if layer is not None:  # shortcut can be None
+                    weight_init.c2_msra_fill(layer)
 
         nn.init.constant_(self.conv2_offset.weight, 0)
         nn.init.constant_(self.conv2_offset.bias, 0)
@@ -382,16 +408,20 @@ class DeformBottleneckBlock(ResNetBlockBase):
         out = self.conv1(x)
         out = F.relu_(out)
 
-        if self.deform_modulated:
-            offset_mask = self.conv2_offset(out)
-            offset_x, offset_y, mask = torch.chunk(offset_mask, 3, dim=1)
-            offset = torch.cat((offset_x, offset_y), dim=1)
-            mask = mask.sigmoid()
-            out = self.conv2(out, offset, mask)
-        else:
+        if self.radix>1:
             offset = self.conv2_offset(out)
             out = self.conv2(out, offset)
-        out = F.relu_(out)
+        else:
+            if self.deform_modulated:
+                offset_mask = self.conv2_offset(out)
+                offset_x, offset_y, mask = torch.chunk(offset_mask, 3, dim=1)
+                offset = torch.cat((offset_x, offset_y), dim=1)
+                mask = mask.sigmoid()
+                out = self.conv2(out, offset, mask)
+            else:
+                offset = self.conv2_offset(out)
+                out = self.conv2(out, offset)
+            out = F.relu_(out)
 
         if self.avd:
             out = self.avd_layer(out)
