@@ -352,6 +352,7 @@ class DeformBottleneckBlock(ResNetBlockBase):
             stride=1 if self.avd else stride_3x3,
             padding=1 * dilation,
             dilation=dilation,
+            groups=deform_num_groups,
         )
         if self.radix>1:
             from .splat import SplAtConv2d_dcn
