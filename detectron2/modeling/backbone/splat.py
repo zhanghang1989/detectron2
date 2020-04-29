@@ -129,7 +129,7 @@ class SplAtConv2d_dcn(Module):
             self.conv = RFConv2d(in_channels, channels*radix, kernel_size, stride, padding, dilation,
                                  groups=groups*radix, bias=bias, average_mode=rectify_avg, **kwargs)
         else:
-            self.conv = deform_conv_op(in_channels, channels*radix, kernel_size, stride, padding, dilation,
+            self.conv = deform_conv_op(in_channels, channels*radix, kernel_size, stride, padding[0], dilation,
                                groups=groups*radix, bias=bias, deformable_groups=deformable_groups, **kwargs)
         self.use_bn = norm is not None
         if self.use_bn:
